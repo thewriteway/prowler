@@ -1,9 +1,10 @@
 import { Tooltip } from "@nextui-org/react";
 import React from "react";
 
-import { ConnectionFalse, ConnectionPending, ConnectionTrue } from "../icons";
-import { getProviderLogo, ProviderType } from "../ui/entities";
+import { ProviderType } from "@/types";
 
+import { ConnectionFalse, ConnectionPending, ConnectionTrue } from "../icons";
+import { getProviderLogo } from "../ui/entities";
 interface ProviderInfoProps {
   connected: boolean | null;
   provider: ProviderType;
@@ -49,21 +50,11 @@ export const ProviderInfo: React.FC<ProviderInfoProps> = ({
   };
 
   return (
-    <div className="dark:bg-prowler-blue-400">
-      <div className="grid grid-cols-1">
-        <div className="flex items-center text-sm">
-          <div className="flex items-center">
-            <span className="flex items-center justify-center px-4">
-              {getProviderLogo(provider)}
-            </span>
-            <div className="flex items-center space-x-4">
-              <div className="flex-shrink-0">{getIcon()}</div>
-              <span className="font-medium">
-                {providerAlias || providerUID}
-              </span>
-            </div>
-          </div>
-        </div>
+    <div className="flex items-center text-sm">
+      <div className="flex items-center space-x-4">
+        {getProviderLogo(provider)}
+        {getIcon()}
+        <span className="font-medium">{providerAlias || providerUID}</span>
       </div>
     </div>
   );

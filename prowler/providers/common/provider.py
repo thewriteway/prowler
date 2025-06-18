@@ -207,6 +207,7 @@ class Provider(ABC):
                         kubeconfig_file=arguments.kubeconfig_file,
                         context=arguments.context,
                         namespace=arguments.namespace,
+                        cluster_name=arguments.cluster_name,
                         config_path=arguments.config_file,
                         mutelist_path=arguments.mutelist_file,
                         fixer_config=fixer_config,
@@ -231,6 +232,21 @@ class Provider(ABC):
                         tenant_id=arguments.nhn_tenant_id,
                         config_path=arguments.config_file,
                         mutelist_path=arguments.mutelist_file,
+                        fixer_config=fixer_config,
+                    )
+                elif "github" in provider_class_name.lower():
+                    provider_class(
+                        personal_access_token=arguments.personal_access_token,
+                        oauth_app_token=arguments.oauth_app_token,
+                        github_app_key=arguments.github_app_key,
+                        github_app_id=arguments.github_app_id,
+                        mutelist_path=arguments.mutelist_file,
+                        config_path=arguments.config_file,
+                    )
+                elif "iac" in provider_class_name.lower():
+                    provider_class(
+                        scan_path=arguments.scan_path,
+                        config_path=arguments.config_file,
                         fixer_config=fixer_config,
                     )
 

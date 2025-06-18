@@ -5,15 +5,14 @@ import { ColumnDef } from "@tanstack/react-table";
 import { useSearchParams } from "next/navigation";
 
 import { InfoIcon } from "@/components/icons";
-import { DownloadIconButton, toast } from "@/components/ui";
 import { DateWithTime, EntityInfoShort } from "@/components/ui/entities";
 import { TriggerSheet } from "@/components/ui/sheet";
 import { DataTableColumnHeader, StatusBadge } from "@/components/ui/table";
-import { downloadScanZip } from "@/lib/helper";
-import { ScanProps } from "@/types";
+import { ProviderType, ScanProps } from "@/types";
 
 import { LinkToFindingsFromScan } from "../../link-to-findings-from-scan";
 import { TriggerIcon } from "../../trigger-icon";
+import { DataTableDownloadDetails } from "./data-table-download-details";
 import { DataTableRowActions } from "./data-table-row-actions";
 import { DataTableRowDetails } from "./data-table-row-details";
 
@@ -60,7 +59,7 @@ export const ColumnGetScans: ColumnDef<ScanProps>[] = [
 
       return (
         <EntityInfoShort
-          cloudProvider={provider as "aws" | "azure" | "gcp" | "kubernetes"}
+          cloudProvider={provider as ProviderType}
           entityAlias={alias}
           entityId={uid}
         />
@@ -130,15 +129,10 @@ export const ColumnGetScans: ColumnDef<ScanProps>[] = [
       </div>
     ),
     cell: ({ row }) => {
-      const scanId = row.original.id;
-      const scanState = row.original.attributes?.state;
-
       return (
-        <DownloadIconButton
-          paramId={scanId}
-          onDownload={() => downloadScanZip(scanId, toast)}
-          isDisabled={scanState !== "completed"}
-        />
+        <div className="mx-auto w-fit">
+          <DataTableDownloadDetails row={row} />
+        </div>
       );
     },
   },

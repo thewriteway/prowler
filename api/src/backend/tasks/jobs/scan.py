@@ -13,12 +13,13 @@ from api.compliance import (
     PROWLER_COMPLIANCE_OVERVIEW_TEMPLATE,
     generate_scan_compliance,
 )
-from api.db_utils import rls_transaction
+from api.db_utils import create_objects_in_batches, rls_transaction
 from api.models import (
-    ComplianceOverview,
+    ComplianceRequirementOverview,
     Finding,
     Provider,
     Resource,
+    ResourceScanSummary,
     ResourceTag,
     Scan,
     ScanSummary,
@@ -118,10 +119,11 @@ def perform_prowler_scan(
         ValueError: If the provider cannot be connected.
 
     """
-    check_status_by_region = {}
     exception = None
     unique_resources = set()
+    scan_resource_cache: set[tuple[str, str, str, str]] = set()
     start_time = time.time()
+    exc = None
 
     with rls_transaction(tenant_id):
         provider_instance = Provider.objects.get(pk=provider_id)
@@ -137,7 +139,7 @@ def perform_prowler_scan(
                 provider_instance.connected = True
             except Exception as e:
                 provider_instance.connected = False
-                raise ValueError(
+                exc = ValueError(
                     f"Provider {provider_instance.provider} is not connected: {e}"
                 )
             finally:
@@ -145,6 +147,11 @@ def perform_prowler_scan(
                     tz=timezone.utc
                 )
                 provider_instance.save()
+
+        # If the provider is not connected, raise an exception outside the transaction.
+        # If raised within the transaction, the transaction will be rolled back and the provider will not be marked as not connected.
+        if exc:
+            raise exc
 
         prowler_scan = ProwlerScan(provider=prowler_provider, checks=checks_to_execute)
 
@@ -285,15 +292,15 @@ def perform_prowler_scan(
                     )
                     finding_instance.add_resources([resource_instance])
 
-                # Update compliance data if applicable
-                if finding.status.value == "MUTED":
-                    continue
-
-                region_dict = check_status_by_region.setdefault(finding.region, {})
-                current_status = region_dict.get(finding.check_id)
-                if current_status == "FAIL":
-                    continue
-                region_dict[finding.check_id] = finding.status.value
+                # Update scan resource summaries
+                scan_resource_cache.add(
+                    (
+                        str(resource_instance.id),
+                        resource_instance.service,
+                        resource_instance.region,
+                        resource_instance.type,
+                    )
+                )
 
             # Update scan progress
             with rls_transaction(tenant_id):
@@ -314,65 +321,32 @@ def perform_prowler_scan(
             scan_instance.unique_resource_count = len(unique_resources)
             scan_instance.save()
 
-    if exception is None:
-        try:
-            regions = prowler_provider.get_regions()
-        except AttributeError:
-            regions = set()
-
-        compliance_template = PROWLER_COMPLIANCE_OVERVIEW_TEMPLATE[
-            provider_instance.provider
-        ]
-        compliance_overview_by_region = {
-            region: deepcopy(compliance_template) for region in regions
-        }
-
-        for region, check_status in check_status_by_region.items():
-            compliance_data = compliance_overview_by_region.setdefault(
-                region, deepcopy(compliance_template)
-            )
-            for check_name, status in check_status.items():
-                generate_scan_compliance(
-                    compliance_data,
-                    provider_instance.provider,
-                    check_name,
-                    status,
-                )
-
-        # Prepare compliance overview objects
-        compliance_overview_objects = []
-        for region, compliance_data in compliance_overview_by_region.items():
-            for compliance_id, compliance in compliance_data.items():
-                compliance_overview_objects.append(
-                    ComplianceOverview(
-                        tenant_id=tenant_id,
-                        scan=scan_instance,
-                        region=region,
-                        compliance_id=compliance_id,
-                        framework=compliance["framework"],
-                        version=compliance["version"],
-                        description=compliance["description"],
-                        requirements=compliance["requirements"],
-                        requirements_passed=compliance["requirements_status"]["passed"],
-                        requirements_failed=compliance["requirements_status"]["failed"],
-                        requirements_manual=compliance["requirements_status"]["manual"],
-                        total_requirements=compliance["total_requirements"],
-                    )
-                )
-        try:
-            with rls_transaction(tenant_id):
-                ComplianceOverview.objects.bulk_create(
-                    compliance_overview_objects, batch_size=100
-                )
-        except Exception as overview_exception:
-            import sentry_sdk
-
-            sentry_sdk.capture_exception(overview_exception)
-            logger.error(
-                f"Error storing compliance overview for scan {scan_id}: {overview_exception}"
-            )
     if exception is not None:
         raise exception
+
+    try:
+        resource_scan_summaries = [
+            ResourceScanSummary(
+                tenant_id=tenant_id,
+                scan_id=scan_id,
+                resource_id=resource_id,
+                service=service,
+                region=region,
+                resource_type=resource_type,
+            )
+            for resource_id, service, region, resource_type in scan_resource_cache
+        ]
+        with rls_transaction(tenant_id):
+            ResourceScanSummary.objects.bulk_create(
+                resource_scan_summaries, batch_size=500, ignore_conflicts=True
+            )
+    except Exception as filter_exception:
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(filter_exception)
+        logger.error(
+            f"Error storing filter values for scan {scan_id}: {filter_exception}"
+        )
 
     serializer = ScanTaskSerializer(instance=scan_instance)
     return serializer.data
@@ -528,3 +502,114 @@ def aggregate_findings(tenant_id: str, scan_id: str):
             for agg in aggregation
         }
         ScanSummary.objects.bulk_create(scan_aggregations, batch_size=3000)
+
+
+def create_compliance_requirements(tenant_id: str, scan_id: str):
+    """
+    Create detailed compliance requirement overview records for a scan.
+
+    This function processes the compliance data collected during a scan and creates
+    individual records for each compliance requirement in each region. These detailed
+    records provide a granular view of compliance status.
+
+    Args:
+        tenant_id (str): The ID of the tenant for which to create records.
+        scan_id (str): The ID of the scan for which to create records.
+
+    Returns:
+        dict: A dictionary containing the number of requirements created and the regions processed.
+
+    Raises:
+        ValidationError: If tenant_id is not a valid UUID.
+    """
+    try:
+        with rls_transaction(tenant_id):
+            scan_instance = Scan.objects.get(pk=scan_id)
+            provider_instance = scan_instance.provider
+            prowler_provider = initialize_prowler_provider(provider_instance)
+
+        # Get check status data by region from findings
+        check_status_by_region = {}
+        with rls_transaction(tenant_id):
+            findings = Finding.objects.filter(scan_id=scan_id, muted=False)
+            for finding in findings:
+                # Get region from resources
+                for resource in finding.resources.all():
+                    region = resource.region
+                    region_dict = check_status_by_region.setdefault(region, {})
+                    current_status = region_dict.get(finding.check_id)
+                    if current_status == "FAIL":
+                        continue
+                    region_dict[finding.check_id] = finding.status
+
+        try:
+            # Try to get regions from provider
+            regions = prowler_provider.get_regions()
+        except (AttributeError, Exception):
+            # If not available, use regions from findings
+            regions = set(check_status_by_region.keys())
+
+        # Get compliance template for the provider
+        compliance_template = PROWLER_COMPLIANCE_OVERVIEW_TEMPLATE[
+            provider_instance.provider
+        ]
+
+        # Create compliance data by region
+        compliance_overview_by_region = {
+            region: deepcopy(compliance_template) for region in regions
+        }
+
+        # Apply check statuses to compliance data
+        for region, check_status in check_status_by_region.items():
+            compliance_data = compliance_overview_by_region.setdefault(
+                region, deepcopy(compliance_template)
+            )
+            for check_name, status in check_status.items():
+                generate_scan_compliance(
+                    compliance_data,
+                    provider_instance.provider,
+                    check_name,
+                    status,
+                )
+
+        # Prepare compliance requirement objects
+        compliance_requirement_objects = []
+        for region, compliance_data in compliance_overview_by_region.items():
+            for compliance_id, compliance in compliance_data.items():
+                # Create an overview record for each requirement within each compliance framework
+                for requirement_id, requirement in compliance["requirements"].items():
+                    compliance_requirement_objects.append(
+                        ComplianceRequirementOverview(
+                            tenant_id=tenant_id,
+                            scan=scan_instance,
+                            region=region,
+                            compliance_id=compliance_id,
+                            framework=compliance["framework"],
+                            version=compliance["version"],
+                            requirement_id=requirement_id,
+                            description=requirement["description"],
+                            passed_checks=requirement["checks_status"]["pass"],
+                            failed_checks=requirement["checks_status"]["fail"],
+                            total_checks=requirement["checks_status"]["total"],
+                            requirement_status=requirement["status"],
+                        )
+                    )
+
+        # Bulk create requirement records
+        create_objects_in_batches(
+            tenant_id, ComplianceRequirementOverview, compliance_requirement_objects
+        )
+
+        return {
+            "requirements_created": len(compliance_requirement_objects),
+            "regions_processed": list(regions),
+            "compliance_frameworks": (
+                list(compliance_overview_by_region.get(list(regions)[0], {}).keys())
+                if regions
+                else []
+            ),
+        }
+
+    except Exception as e:
+        logger.error(f"Error creating compliance requirements for scan {scan_id}: {e}")
+        raise e

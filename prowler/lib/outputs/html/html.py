@@ -41,7 +41,7 @@ class HTML(Output):
                             <td>{finding_status}</td>
                             <td>{finding.metadata.Severity.value}</td>
                             <td>{finding.metadata.ServiceName}</td>
-                            <td>{finding.region.lower()}</td>
+                            <td>{":".join([finding.resource_metadata['file_path'], "-".join(map(str, finding.resource_metadata['file_line_range']))]) if finding.metadata.Provider == "iac" else finding.region.lower()}</td>
                             <td>{finding.metadata.CheckID.replace("_", "<wbr />_")}</td>
                             <td>{finding.metadata.CheckTitle}</td>
                             <td>{finding.resource_uid.replace("<", "&lt;").replace(">", "&gt;").replace("_", "<wbr />_")}</td>
@@ -204,7 +204,7 @@ class HTML(Output):
                     <th scope="col">Status</th>
                     <th scope="col">Severity</th>
                     <th scope="col">Service Name</th>
-                    <th scope="col">Region</th>
+                    <th scope="col">{"File" if provider.type == "iac" else "Region"}</th>
                     <th style="width:20%" scope="col">Check ID</th>
                     <th style="width:20%" scope="col">Check Title</th>
                     <th scope="col">Resource ID</th>
@@ -545,10 +545,54 @@ class HTML(Output):
             return ""
 
     @staticmethod
+    def get_github_assessment_summary(provider: Provider) -> str:
+        """
+        get_github_assessment_summary gets the HTML assessment summary for the provider
+
+        Args:
+            provider (Provider): the provider object
+
+        Returns:
+            str: the HTML assessment summary
+        """
+        try:
+            return f"""
+                <div class="col-md-2">
+                    <div class="card">
+                        <div class="card-header">
+                            GitHub Assessment Summary
+                        </div>
+                        <ul class="list-group
+                        list-group-flush">
+                            <li class="list-group-item">
+                                <b>GitHub account:</b> {provider.identity.account_name}
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">
+                            GitHub Credentials
+                        </div>
+                        <ul class="list-group
+                        list-group-flush">
+                            <li class="list-group-item">
+                                <b>GitHub authentication method:</b> {provider.auth_method}
+                            </li>
+                        </ul>
+                    </div>
+                </div>"""
+        except Exception as error:
+            logger.error(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}] -- {error}"
+            )
+            return ""
+
+    @staticmethod
     def get_m365_assessment_summary(provider: Provider) -> str:
         """
         get_m365_assessment_summary gets the HTML assessment summary for the provider
-
         Args:
             provider (Provider): the provider object
 
@@ -564,7 +608,9 @@ class HTML(Output):
                         </div>
                         <ul class="list-group list-group-flush">
                             <li class="list-group-item">
-                                <b>M365 Tenant Domain:</b> {provider.identity.tenant_domain}
+                                <b>M365 Tenant Domain:</b> {
+                provider.identity.tenant_domain
+            }
                             </li>
                         </ul>
                     </div>
@@ -581,6 +627,14 @@ class HTML(Output):
                             <li class="list-group-item">
                                 <b>M365 Identity ID:</b> {provider.identity.identity_id}
                             </li>
+                            {
+                f'''<li class="list-group-item">
+                                <b>M365 User:</b> {provider.identity.user}
+                            </li>'''
+                if hasattr(provider.identity, "user")
+                and provider.identity.user is not None
+                else ""
+            }
                         </ul>
                     </div>
                 </div>"""
@@ -636,6 +690,51 @@ class HTML(Output):
             return ""
 
     @staticmethod
+    def get_iac_assessment_summary(provider: Provider) -> str:
+        """
+        get_iac_assessment_summary gets the HTML assessment summary for the provider
+
+        Args:
+            provider (Provider): the provider object
+
+        Returns:
+            str: the HTML assessment summary
+        """
+        try:
+            return f"""
+                <div class="col-md-2">
+                    <div class="card">
+                        <div class="card-header">
+                            IAC Assessment Summary
+                        </div>
+                        <ul class="list-group
+                        list-group-flush">
+                            <li class="list-group-item">
+                                <b>IAC path:</b> {provider.scan_path}
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">
+                            IAC Credentials
+                        </div>
+                        <ul class="list-group
+                        list-group-flush">
+                            <li class="list-group-item">
+                                <b>IAC authentication method:</b> local
+                            </li>
+                        </ul>
+                    </div>
+                </div>"""
+        except Exception as error:
+            logger.error(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}] -- {error}"
+            )
+            return ""
+
+    @staticmethod
     def get_assessment_summary(provider: Provider) -> str:
         """
         get_assessment_summary gets the HTML assessment summary for the provider
@@ -651,6 +750,7 @@ class HTML(Output):
             # It is not pretty but useful
             # AWS_provider --> aws
             # GCP_provider --> gcp
+            # GitHub_provider --> github
             # Azure_provider --> azure
             # Kubernetes_provider --> kubernetes
 
